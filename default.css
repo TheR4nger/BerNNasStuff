@@ -1,11 +1,11 @@
 :root {
     --surCordBackground: transparent;
-    --surCordBackground2: transparent;
-    --surCordTextBackground: rgb(254, 30, 30);
-    --surcordFriendsBackground: rgb(254, 180, 30);
-    --surCordFriends: rgb(254, 130, 130);
+    --surCordBackground2: rgb(42, 40, 44);
+    --surCordTextBackground: transparent;
+    --surcordFriendsBackground: rgb(33, 31, 35);
+    --surCordFriends: transparent;
     --surCordActiveNow: rgba(88, 84, 85, 0.276);
-    --surCordGuilds: rgb(24, 178, 20);
+    --surCordGuilds: transparent;
     --surCordTitleBar: transparent;
     --surCordSearch: transparent;
     --surCordHover: rgb(30, 30, 30);
