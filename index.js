@@ -1,7 +1,7 @@
 /**
  * @name PlainChat Revamp
  * @author BerNNas & ChatGPT
- * @version 1.1.4
+ * @version 1.1.5
  * @description Role-aware DK aliases in Champion Select, self-name protection, safe chat labels and lightweight lifecycle handling.
  */
 const DEBUG=false; // Enable temporarily for detailed logs; status() always works
@@ -15,6 +15,13 @@ const ROLE = Object.freeze({
 });
 const SESSION='/lol-champ-select/v1/session';
 const PHASE='/lol-gameflow/v1/gameflow-phase';
+const GAMEFLOW='/lol-gameflow/v1/session';
+const SOLO_QUEUE_ID=420;
+const queueFromGameflow=data=>{
+  const values=[data?.gameData?.queue?.id,data?.gameData?.queueId,data?.queueId];
+  const ids=values.filter(v=>v!==null&&v!==undefined&&v!==''&&Number.isSafeInteger(Number(v))).map(Number);
+  return ids.length&&ids.every(v=>v===ids[0])?ids[0]:null;
+};
 const CURRENT='/lol-summoner/v1/current-summoner';
 const CHAT_ME='/lol-chat/v1/me';
 const SLOT='.summoner-container';
@@ -67,9 +74,10 @@ const slotId=slot=>{
   }
   return new Set(ids).size===1?ids[0]:null;
 };
-export function createEngine({doc, getSession, getMe, observe=null, Observer=MutationObserver,
+export function createEngine({doc, getSession, getMe, getQueue, observe=null, Observer=MutationObserver,
   interval=setInterval, clear=clearInterval, logger=console}){
   let active=false, roles=new Map(), ownCell=null, ownRole=null, me='';
+  let queueId=null;
   let epoch=0, request=0, started=false, stopped=false, queued=false;
   let scheduleTimer=null, requestInFlight=false, lastIdentityRead=0;
   let pendingRefresh=false, lastWarn=0;
@@ -370,14 +378,22 @@ export function createEngine({doc, getSession, getMe, observe=null, Observer=Mut
   }
   function deactivate(){
     epoch++;request++;
-    active=false;roles.clear();ownCell=null;ownRole=null;sessionKey='';
+    active=false;roles.clear();ownCell=null;ownRole=null;sessionKey='';queueId=null;
     if(scheduleTimer!==null){clearTimeout(scheduleTimer);scheduleTimer=null;queued=false;}
     chatObserver?.disconnect();chatObserver=null;frameDoc=null;
     mainObserver?.disconnect();
     restore();
     cleanOutsideLabels();
   }
-  function setSession(data){
+  function setSession(data, confirmedQueueId=null){
+    // Fail closed: only confirmed Ranked Solo/Duo can receive DK aliases.
+    if(confirmedQueueId!==SOLO_QUEUE_ID){
+      if(active)deactivate();
+      queueId=Number.isSafeInteger(confirmedQueueId)?confirmedQueueId:null;
+      diagnostics.reason=queueId===null?'queue-unconfirmed':'queue-not-solo-duo';
+      return;
+    }
+    queueId=confirmedQueueId;
     if(!data||!Array.isArray(data.myTeam)){debug('session',{rejected:'no myTeam'});return deactivate();}
     const own=cellOf(data.localPlayerCellId);
     const self=data.myTeam.find(p=>cellOf(p.cellId)===own);
@@ -417,14 +433,15 @@ export function createEngine({doc, getSession, getMe, observe=null, Observer=Mut
     try{
       // Identity rarely changes; avoid fetching it on every LCU refresh.
       const shouldReadIdentity=!me || Date.now()-lastIdentityRead>120000;
-      const [session,identity]=await Promise.all([
-        getSession(),shouldReadIdentity&&getMe?getMe().catch(()=>null):Promise.resolve(null)
+      const [session,identity,confirmedQueueId]=await Promise.all([
+        getSession(),shouldReadIdentity&&getMe?getMe().catch(()=>null):Promise.resolve(null),
+        getQueue?getQueue().catch(()=>null):Promise.resolve(null)
       ]);
       if(shouldReadIdentity)lastIdentityRead=Date.now();
       if(stopped||seq!==request||generation!==epoch)return;
       const nextMe=nameFromMe(identity);
       if(nextMe)me=nextMe;
-      setSession(session);
+      setSession(session,confirmedQueueId);
     }catch(error){
       if(!stopped&&seq===request&&generation===epoch){
         if(error?.status===404){deactivate();}
@@ -495,7 +512,7 @@ export function createEngine({doc, getSession, getMe, observe=null, Observer=Mut
     restore();
   }
   return {start,stop,refresh,setSession,deactivate,reconcile,
-    status:()=>({active,ownCell,ownRole,me,roles:Object.fromEntries(roles),
+    status:()=>({active,queueId,ownCell,ownRole,me,roles:Object.fromEntries(roles),
       aliases:Object.fromEntries(aliases),selfEvidence,diagnostics:{...diagnostics},
       timing:{lastReconcileMs:lastApplyMs,lastAppliedAt:lastApplyAt}})};
 }
@@ -515,6 +532,7 @@ export function load(){
   };
   engine=createEngine({
     doc:document,getSession:()=>getJson(SESSION),
+    getQueue:async()=>queueFromGameflow(await getJson(GAMEFLOW)),
     getMe:async()=>{
       try{return await getJson(CURRENT)}
       catch(_){return await getJson(CHAT_ME)}
